@@ -43,26 +43,39 @@ export function _research(requestConfig: TavilyRequestConfig): TavilyResearchFun
           "stream"
         );
 
+        const responseStream = response.data as Readable;
         async function* streamGenerator(): AsyncGenerator<
           Buffer,
           void,
           unknown
         > {
-          const stream = response.data as Readable;
           try {
-            for await (const chunk of stream) {
+            for await (const chunk of responseStream) {
               if (chunk) {
                 yield chunk;
               }
             }
           } finally {
-            if (!stream.destroyed) {
-              stream.destroy();
+            if (!responseStream.destroyed) {
+              responseStream.destroy();
             }
           }
         }
 
-        return streamGenerator();
+        const generator = streamGenerator();
+        // Close before queueing the generator operation: its finally block does
+        // not run before the first read or while a read is waiting for data.
+        const returnGenerator = generator.return.bind(generator);
+        generator.return = (value) => {
+          responseStream.destroy();
+          return returnGenerator(value);
+        };
+        const throwGenerator = generator.throw.bind(generator);
+        generator.throw = (error) => {
+          responseStream.destroy();
+          return throwGenerator(error);
+        };
+        return generator;
       } catch (err) {
         if (err instanceof AxiosError) {
           if (err.code === "ECONNABORTED") {
